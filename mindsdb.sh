@@ -16,6 +16,9 @@ var_os="${var_os:-debian}"
 var_version="${var_version:-12}"
 var_unprivileged="${var_unprivileged:-1}"
 
+# --- Force INLINE-ONLY path (avoid any remote installer calls) ---
+var_install=""   # <- ensures build.func won't try to fetch install/${var_install}.sh
+
 # Optional: override MindsDB image tag (defaults to latest)
 MDB_IMAGE="${MDB_IMAGE:-mindsdb/mindsdb:latest}"
 
@@ -48,10 +51,11 @@ function update_script() {
   if docker ps -a --format '{{.Names}}' | grep -q '^mindsdb$'; then
     $STD docker rm -f mindsdb
   fi
+
   # Recreate from stored env and volumes
-  # Try to source stored env if present
   MDB_ENV_FILE="/opt/mindsdb/.env"
   if [[ -f "${MDB_ENV_FILE}" ]]; then
+    # shellcheck disable=SC1090
     source "${MDB_ENV_FILE}"
   fi
 
@@ -78,7 +82,7 @@ function update_script() {
 # -------------------------- LXC build + install path ----------------------------
 start
 build_container
-description
+# description            # REMOVED to avoid remote installer path
 
 # Everything below runs inside the newly created container
 inline() {
@@ -120,6 +124,7 @@ EOF
   fi
 
   # Load env
+  # shellcheck disable=SC1091
   source /opt/mindsdb/.env
 
   # Pull and run MindsDB
@@ -151,6 +156,7 @@ if ! command -v docker &>/dev/null; then
 fi
 docker pull mindsdb/mindsdb:latest
 docker rm -f mindsdb || true
+# shellcheck disable=SC1091
 source /opt/mindsdb/.env
 docker run -d \
   --name mindsdb \
@@ -179,6 +185,11 @@ container_inline inline
 msg_ok "Completed Successfully!\n"
 
 # Final hints printed from Proxmox host with container IP
+# If IP from helpers is empty, compute it from CT
+if [[ -z "${IP:-}" && -n "${CTID:-}" ]]; then
+  IP=$(pct exec "$CTID" -- bash -lc "hostname -I | awk '{print \$1}'" 2>/dev/null)
+fi
+
 echo -e "${CREATING}${GN}${APP} is up!${CL}"
 echo -e "${INFO}${YW} Access via:${CL}"
 echo -e "${TAB}${GATEWAY}${BGN}http://${IP}:47334${CL}"
@@ -186,4 +197,3 @@ echo -e "${INFO}${YW} MySQL API:${CL}"
 echo -e "${TAB}${GATEWAY}${BGN}${IP}:47335${CL}"
 echo -e "${INFO}${YW} To retrieve credentials from inside the container:${CL}"
 echo -e "${TAB}${BGN}cat /opt/mindsdb/connection-info${CL}"
-
