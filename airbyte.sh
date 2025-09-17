@@ -19,11 +19,9 @@ header_info "$APP"
 variables
 color
 catch_errors
-start
-build_container
-description
 
-inline() {
+# --- Main installation logic to be run inside the container ---
+inline_script() {
   set -Eeuo pipefail
   local AIRBYTE_VERSION="0.60.0" # Centralized version number for easy updates
 
@@ -63,7 +61,6 @@ $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list
   mkdir -p /opt/airbyte/{workspace,local,db}
 
   # Patch volume targets to fixed container paths to avoid empty-var errors
-  # e.g. "workspace:${WORKSPACE_ROOT}" -> "workspace:/workspace"
   sed -Ei \
     -e 's#workspace:\$\{WORKSPACE_ROOT\}#workspace:/workspace#g' \
     -e 's#workspace:\$\{WORKSPACE_DOCKER_MOUNT\}#workspace:/workspace#g' \
@@ -74,14 +71,14 @@ $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list
     -e 's#db:\$\{DB_DOCKER_MOUNT\}#db:/db#g' \
     airbyte.yaml
 
-  # Minimal .env (version + basic auth). No path vars needed now.
+  # Minimal .env (version + basic auth)
   cat > .env <<EOF
 VERSION=${AIRBYTE_VERSION}
 BASIC_AUTH_USERNAME=airbyte
 BASIC_AUTH_PASSWORD=${var_ab_password}
 EOF
 
-  # Validate interpolation (should be quiet; importantly, no `workspace::` or `local_root::`)
+  # Validate interpolation
   docker compose -f airbyte.yaml --env-file .env config >/dev/null
 
   # Pull & start
@@ -89,8 +86,13 @@ EOF
   docker compose -f airbyte.yaml --env-file .env up -d
 
   # Wait for UI
+  echo "Waiting for Airbyte UI to become available... (This may take a few minutes)"
   for i in {1..90}; do
-    if curl -fsS 127.0.0.1:8000 >/dev/null 2>&1; then break; fi
+    if curl -fsS 127.0.0.1:8000 >/dev/null 2>&1; then 
+      echo "Airbyte UI is up!"
+      break
+    fi
+    echo -n "."
     sleep 2
   done
 
@@ -99,13 +101,27 @@ EOF
     docker exec airbyte-temporal tctl --ns default namespace describe >/dev/null 2>&1 || \
     docker exec airbyte-temporal tctl --ns default namespace register --rd 3 || true
   fi
-
-  IP=$(hostname -I | awk '{print $1}')
-  echo "UI login: airbyte / ${var_ab_password}" | tee /opt/airbyte/credentials.txt
-  echo "Airbyte UI: http://${IP}:8000"
-  docker compose -f airbyte.yaml --env-file .env ps
 }
 
+# --- Script execution ---
+start
+msg_info "Setting up Container OS"
+build_lxc
 msg_info "Setting up ${APP} via Docker Compose (LXC-friendly)"
-container_inline inline
+# Execute the inline_script function within the container
+lxc-attach -n "$CTID" -- bash -c "$(declare -f inline_script); inline_script"
+IP=$(lxc-info -n "$CTID" -iH | awk '{print $1}')
+
+# Pass password to script finish
+cat <<EOF > /etc/motd.d/99-${APP}
+--------------------------------------------------------------
+ Application: ${APP}
+ UI URL: http://${IP}:8000
+ UI Login: airbyte / ${var_ab_password}
+ --------------------------------------------------------------
+EOF
+motd_ssh
+
+# Cleanup
+rm -f /etc/motd.d/99-${APP}
 msg_ok "Completed Successfully!"
