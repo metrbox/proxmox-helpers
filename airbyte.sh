@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Proxmox LXC Helper: Airbyte OSS (abctl)
-# Author: ChatGPT (for Tayo) | MIT
-source <(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func)
+# Proxmox LXC Helper: Airbyte OSS (docker-compose)
+# Author: Tayo | MIT
+set -Eeuo pipefail
 
+# ---- Proxmox LXC bootstrap helpers ----
+source <(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func)
 APP="Airbyte"
 var_tags="${var_tags:-etl;integration}"
 var_cpu="${var_cpu:-6}"
@@ -11,6 +13,7 @@ var_disk="${var_disk:-60}"
 var_os="${var_os:-debian}"
 var_version="${var_version:-12}"
 var_unprivileged="${var_unprivileged:-1}"
+var_ab_password="${var_ab_password:-$(openssl rand -hex 8)}" # Allow user-defined password, generate if empty
 
 header_info "$APP"
 variables
@@ -21,40 +24,88 @@ build_container
 description
 
 inline() {
-  set -e
+  set -Eeuo pipefail
+  local AIRBYTE_VERSION="0.60.0" # Centralized version number for easy updates
+
   apt-get update
-  apt-get install -y --no-install-recommends ca-certificates curl gnupg lsb-release tar
+  apt-get install -y --no-install-recommends ca-certificates curl gnupg lsb-release jq
   install -d -m 0755 /etc/apt/keyrings
 
-  # Docker CE
+  # Docker CE + compose plugin
   if ! command -v docker &>/dev/null; then
     curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \
 $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
     apt-get update
-    apt-get install -y docker-ce docker-ce-cli containerd.io
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
     systemctl enable --now docker
   fi
 
-  # Install abctl
-  curl -LsfS https://get.airbyte.com | bash -
-  install -D -m 0755 abctl/abctl /usr/local/bin/abctl
-
-  # Install Airbyte locally. Insecure cookies so HTTP works behind LXC IP.
-  abctl local install --insecure-cookies
-
-  # Capture credentials
   install -d -m 0755 /opt/airbyte
-  abctl local credentials | tee /opt/airbyte/credentials.txt
+  cd /opt/airbyte
+
+  # Fetch Airbyte docker-compose (two fallbacks)
+  URLS=(
+    "https://raw.githubusercontent.com/airbytehq/airbyte-platform/v${AIRBYTE_VERSION}/airbyte-compute/src/main/docker/docker-compose.yaml"
+    "https://raw.githubusercontent.com/airbytehq/airbyte-platform/main/airbyte-compute/src/main/docker/docker-compose.yaml"
+  )
+  for u in "${URLS[@]}"; do
+    if curl -fsSLo airbyte.yaml "$u"; then
+      break
+    fi
+  done
+  if ! [ -s airbyte.yaml ]; then
+    echo "Failed to download Airbyte docker-compose.yaml" >&2
+    exit 1
+  fi
+
+  # Ensure directories (named volumes will be used; these are just for optional bind needs)
+  mkdir -p /opt/airbyte/{workspace,local,db}
+
+  # Patch volume targets to fixed container paths to avoid empty-var errors
+  # e.g. "workspace:${WORKSPACE_ROOT}" -> "workspace:/workspace"
+  sed -Ei \
+    -e 's#workspace:\$\{WORKSPACE_ROOT\}#workspace:/workspace#g' \
+    -e 's#workspace:\$\{WORKSPACE_DOCKER_MOUNT\}#workspace:/workspace#g' \
+    -e 's#data:\$\{CONFIG_ROOT\}#data:/data#g' \
+    -e 's#data:\$\{DATA_DOCKER_MOUNT\}#data:/data#g' \
+    -e 's#local:\$\{LOCAL_ROOT\}#local:/local#g' \
+    -e 's#local:\$\{LOCAL_DOCKER_MOUNT\}#local:/local#g' \
+    -e 's#db:\$\{DB_DOCKER_MOUNT\}#db:/db#g' \
+    airbyte.yaml
+
+  # Minimal .env (version + basic auth). No path vars needed now.
+  cat > .env <<EOF
+VERSION=${AIRBYTE_VERSION}
+BASIC_AUTH_USERNAME=airbyte
+BASIC_AUTH_PASSWORD=${var_ab_password}
+EOF
+
+  # Validate interpolation (should be quiet; importantly, no `workspace::` or `local_root::`)
+  docker compose -f airbyte.yaml --env-file .env config >/dev/null
+
+  # Pull & start
+  docker compose -f airbyte.yaml --env-file .env pull
+  docker compose -f airbyte.yaml --env-file .env up -d
+
+  # Wait for UI
+  for i in {1..90}; do
+    if curl -fsS 127.0.0.1:8000 >/dev/null 2>&1; then break; fi
+    sleep 2
+  done
+
+  # (best-effort) ensure Temporal default namespace exists
+  if docker ps --format '{{.Names}}' | grep -q '^airbyte-temporal$'; then
+    docker exec airbyte-temporal tctl --ns default namespace describe >/dev/null 2>&1 || \
+    docker exec airbyte-temporal tctl --ns default namespace register --rd 3 || true
+  fi
 
   IP=$(hostname -I | awk '{print $1}')
-  cat >/opt/airbyte/connection-info <<EOF
-AIRBYTE_URL=http://${IP}:8000
-CREDENTIALS_HINT=Run: abctl local credentials
-EOF
+  echo "UI login: airbyte / ${var_ab_password}" | tee /opt/airbyte/credentials.txt
   echo "Airbyte UI: http://${IP}:8000"
+  docker compose -f airbyte.yaml --env-file .env ps
 }
 
-msg_info "Setting up ${APP} with abctl inside the container"
+msg_info "Setting up ${APP} via Docker Compose (LXC-friendly)"
 container_inline inline
-msg_ok "Completed Successfully!\n"
+msg_ok "Completed Successfully!"
