@@ -19,6 +19,7 @@ header_info "$APP"
 variables
 color
 catch_errors
+start
 
 # --- Main installation logic to be run inside the container ---
 inline_script() {
@@ -82,11 +83,13 @@ EOF
   docker compose -f airbyte.yaml --env-file .env config >/dev/null
 
   # Pull & start
+  msg_info "Pulling Airbyte Docker images..."
   docker compose -f airbyte.yaml --env-file .env pull
+  msg_info "Starting Airbyte services..."
   docker compose -f airbyte.yaml --env-file .env up -d
 
   # Wait for UI
-  echo "Waiting for Airbyte UI to become available... (This may take a few minutes)"
+  msg_info "Waiting for Airbyte UI to become available... (This may take a few minutes)"
   for i in {1..90}; do
     if curl -fsS 127.0.0.1:8000 >/dev/null 2>&1; then 
       echo "Airbyte UI is up!"
@@ -104,24 +107,10 @@ EOF
 }
 
 # --- Script execution ---
-start
-msg_info "Setting up Container OS"
-build_lxc
-msg_info "Setting up ${APP} via Docker Compose (LXC-friendly)"
-# Execute the inline_script function within the container
-lxc-attach -n "$CTID" -- bash -c "$(declare -f inline_script); inline_script"
-IP=$(lxc-info -n "$CTID" -iH | awk '{print $1}')
-
-# Pass password to script finish
-cat <<EOF > /etc/motd.d/99-${APP}
---------------------------------------------------------------
- Application: ${APP}
- UI URL: http://${IP}:8000
- UI Login: airbyte / ${var_ab_password}
- --------------------------------------------------------------
-EOF
+description
+msg_info "Setting up ${APP}..."
+container_inline inline_script
 motd_ssh
-
-# Cleanup
-rm -f /etc/motd.d/99-${APP}
 msg_ok "Completed Successfully!"
+echo -e "Airbyte UI is available at: \e[1;32mhttp://${IP}:8000\e[0m"
+echo -e "Login: \e[1;32mairbyte\e[0m / \e[1;32m${var_ab_password}\e[0m"
