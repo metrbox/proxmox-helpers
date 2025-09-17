@@ -3,6 +3,10 @@
 # Author: ChatGPT (for Tayo) | MIT
 source <(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func)
 
+#!/usr/bin/env bash
+source <(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func)
+
+
 APP="Jitsu"
 var_tags="${var_tags:-analytics;ingestion}"
 var_cpu="${var_cpu:-4}"
@@ -17,6 +21,7 @@ JITSU_PORT="${JITSU_PORT:-8000}"
 
 header_info "$APP"
 variables
+var_install="debian-12"
 color
 catch_errors
 start
