@@ -107,10 +107,12 @@ EOF
 }
 
 # --- Script execution ---
-description
+description # Set the container's description in the Proxmox GUI.
 msg_info "Setting up ${APP}..."
-container_inline inline_script
-motd_ssh
+container_inline inline_script # Create the container and run our custom installation function inside it.
+motd_ssh # Create the Message of the Day file that displays info upon SSH login.
 msg_ok "Completed Successfully!"
+
+# Print the final URL and login details directly to the console for immediate use.
 echo -e "Airbyte UI is available at: \e[1;32mhttp://${IP}:8000\e[0m"
 echo -e "Login: \e[1;32mairbyte\e[0m / \e[1;32m${var_ab_password}\e[0m"
