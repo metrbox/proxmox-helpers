@@ -1,7 +1,3 @@
-#!/usr/bin/env bash
-# Proxmox LXC Helper: Jitsu (joint image)
-# Author: ChatGPT (for Tayo) | MIT
-source <(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func)
 
 #!/usr/bin/env bash
 source <(curl -fsSL https://raw.githubusercontent.com/community-scripts/ProxmoxVE/main/misc/build.func)
@@ -19,11 +15,12 @@ var_unprivileged="${var_unprivileged:-1}"
 JITSU_TAG="${JITSU_TAG:-latest}"
 JITSU_PORT="${JITSU_PORT:-8000}"
 
+var_install="debian-12"
 header_info "$APP"
 variables
-var_install="debian-12"
 color
 catch_errors
+SKIP_BASE_INSTALL=1
 start
 build_container
 description
